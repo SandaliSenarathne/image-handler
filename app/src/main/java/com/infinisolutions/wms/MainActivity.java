@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
@@ -11,15 +12,17 @@ import android.graphics.BitmapFactory;
 import android.graphics.Matrix;
 import android.media.ExifInterface;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
-import com.google.android.material.snackbar.Snackbar;
 import com.karumi.dexter.Dexter;
 import com.karumi.dexter.MultiplePermissionsReport;
 import com.karumi.dexter.PermissionToken;
 import com.karumi.dexter.listener.PermissionRequest;
 import com.karumi.dexter.listener.multi.MultiplePermissionsListener;
+import com.squareup.picasso.Picasso;
+import com.yalantis.ucrop.UCrop;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -31,7 +34,6 @@ import androidx.core.content.ContextCompat;
 import android.os.Environment;
 import android.provider.MediaStore;
 import android.provider.Settings;
-import android.util.Log;
 import android.view.View;
 
 import android.view.Menu;
@@ -42,21 +44,22 @@ import android.widget.Toast;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.lang.reflect.Array;
 import java.text.SimpleDateFormat;
-import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 
-import static java.security.AccessController.getContext;
+import jp.wasabeef.picasso.transformations.CropCircleTransformation;
 
 public class MainActivity extends AppCompatActivity {
 
-    private static final int CAMERA_REQUEST = 2;
-    private static final int CAMERA_PERMISSION = 1;
+    final public int CAMERA_REQUEST_PROFILE_PICTURE = 2;
+    final public int GALLERY_REQUEST_PROFILE_PICTURE = 4;
+    final public int CROP_REQUEST_PROFILE_PICTURE = 6;
 
-    private File outputFileName;
-    private File mLastTakenImageAsJPEGFile;
+    public CameraImage cameraProfilePicture;
+    private String currentPhotoPath = "";
+
+    ImageView imgProfile;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -65,169 +68,182 @@ public class MainActivity extends AppCompatActivity {
         Toolbar toolbar = findViewById(R.id.toolbar);
         setSupportActionBar(toolbar);
 
+        imgProfile = findViewById(R.id.imgProfile);
+
+        cameraProfilePicture = new CameraImage(this);
+
         FloatingActionButton fab = findViewById(R.id.fab);
         fab.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
                 // Launch Camera
-                checkPermission();
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R){
+                    AlertDialog alertDialog = new AlertDialog.Builder(getApplicationContext()).create();
+                    alertDialog.setTitle("Sorry !");
+                    alertDialog.setMessage("As you are using a latest version of android this feature is currently not available. Please visit our website to update your profile picture.");
+                    alertDialog.setButton(AlertDialog.BUTTON_POSITIVE, "OK",
+                            new DialogInterface.OnClickListener() {
+                                public void onClick(DialogInterface dialog, int which) {
+                                    dialog.dismiss();
+                                }
+                            });
+                    alertDialog.show();
+                }
+                else {
+                    checkPermission(CAMERA_REQUEST_PROFILE_PICTURE);
+                }
             }
         });
     }
 
-    public  void checkPermission(){
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED){
-            try {
-                outputFileName = createImageFile(".tmp");
-                Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-                intent.putExtra(MediaStore.EXTRA_OUTPUT, Uri.fromFile(outputFileName));
-                // TODO
-                startActivityForResult(intent, CAMERA_REQUEST);
-            } catch (IOException e) {
-                e.printStackTrace();
+    public  void checkPermission(int cameraRequest){
+        Dexter.withActivity(this)
+                .withPermissions(Manifest.permission.CAMERA, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                .withListener(new MultiplePermissionsListener() {
+                    @Override
+                    public void onPermissionsChecked(MultiplePermissionsReport report) {
+                        if (report.areAllPermissionsGranted()) {
+                            showImagePickerOptions(MainActivity.this, cameraRequest);
+                        }
+
+                        if (report.isAnyPermissionPermanentlyDenied()) {
+                            showSettingsDialog();
+                        }
+                    }
+
+                    @Override
+                    public void onPermissionRationaleShouldBeShown(List<PermissionRequest> permissions, PermissionToken token) {
+                        token.continuePermissionRequest();
+                    }
+                }).check();
+    }
+
+    public void showImagePickerOptions(Context context, int cameraRequest) {
+        // setup the alert builder
+        AlertDialog.Builder builder = new AlertDialog.Builder(context);
+        if (cameraRequest == CAMERA_REQUEST_PROFILE_PICTURE)
+            builder.setTitle("Set Profile Picture");
+
+        String[] options = {"Take a picture", "Choose from gallery"};
+        builder.setItems(options, (dialog, which) -> {
+            switch (which) {
+                case 0:
+                    try {
+                        if (cameraRequest == CAMERA_REQUEST_PROFILE_PICTURE){
+                            startActivityForResult(cameraProfilePicture.takePhotoIntent(), CAMERA_REQUEST_PROFILE_PICTURE);
+                            cameraProfilePicture.addToGallery();
+                        }
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                        Toast.makeText(this, "Something went wrong! Please try again later.", Toast.LENGTH_SHORT).show();
+                    }
+                    break;
+                case 1:
+                    if (cameraRequest == CAMERA_REQUEST_PROFILE_PICTURE){
+                        openImagesDocument(GALLERY_REQUEST_PROFILE_PICTURE);
+                    }
+                    break;
             }
-        }else {
-            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION);
+        });
+
+        // create and show the alert dialog
+        AlertDialog dialog = builder.create();
+        dialog.show();
+    }
+
+    private void showSettingsDialog() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Grant Permissions");
+        builder.setMessage("This app needs permission to use this feature. You can grant them in app settings.");
+        builder.setPositiveButton("go to settings", (dialog, which) -> {
+            dialog.cancel();
+            openSettings();
+        });
+        builder.setNegativeButton("cancel", (dialog, which) -> dialog.cancel());
+        builder.show();
+
+    }
+
+    // navigating user to app settings
+    private void openSettings() {
+        Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+        Uri uri = Uri.fromParts("package", this.getPackageName(), null);
+        intent.setData(uri);
+        startActivityForResult(intent, 101);
+    }
+
+
+    //For choose image from gallery
+    private void openImagesDocument(int request) {
+        Intent pictureIntent = new Intent(Intent.ACTION_GET_CONTENT);
+        pictureIntent.setType("image/*");
+        pictureIntent.addCategory(Intent.CATEGORY_OPENABLE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+            String[] mimeTypes = new String[]{"image/jpeg", "image/png"};
+            pictureIntent.putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes);
         }
+        startActivityForResult(Intent.createChooser(pictureIntent, "Select Picture"), request);
     }
 
     @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == CAMERA_REQUEST){
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED){
-                try {
-                    outputFileName = createImageFile(".tmp");
-                    Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-                    intent.putExtra(MediaStore.EXTRA_OUTPUT, Uri.fromFile(outputFileName));
-                    // TODO
-                    startActivityForResult(intent, CAMERA_REQUEST);
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-            }else {
-                Toast.makeText(this, "Set permission to use camera.", Toast.LENGTH_SHORT).show();
-            }
-        }
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+    public void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (resultCode == Activity.RESULT_OK){
-            if (requestCode == CAMERA_REQUEST){
-                processPhoto(data);
+        if(resultCode == RESULT_OK){
+            if(requestCode == CAMERA_REQUEST_PROFILE_PICTURE){
+                String photoPath = cameraProfilePicture.getPhotoPath();
+                Uri uri=Uri.fromFile(new File((photoPath)));
+                cropImage(uri, uri, 2, 1, CROP_REQUEST_PROFILE_PICTURE, false);
+            }else if(requestCode == GALLERY_REQUEST_PROFILE_PICTURE){
+                if (data != null) {
+                    try {
+                        Uri sourceUri = data.getData();
+                        File file = getImageFile();
+                        Uri destinationUri = Uri.fromFile(file);
+                        cropImage(sourceUri, destinationUri, 2, 1, CROP_REQUEST_PROFILE_PICTURE, false);
+                    } catch (Exception e) {
+                        Toast.makeText(this, "Something went wrong! Choose another image.", Toast.LENGTH_SHORT).show();
+                    }
+                }
+            } else if(requestCode == CROP_REQUEST_PROFILE_PICTURE){
+                if (data != null) {
+                    Uri uri = UCrop.getOutput(data);
+                    //TODO - what to do next, API call or other
+                    Picasso.get().load(uri).placeholder(R.drawable.ic_launcher_background).fit().centerInside().into(imgProfile);
+                }
             }
         }
     }
 
-    protected void processPhoto(Intent i)
-    {
-        int imageExifOrientation = 0;
+    private void cropImage(Uri sourceUri, Uri destinationUri, int aspectRatioX, int aspectRatioY,int cropRequest, boolean isCircular) {
+        UCrop.Options options = new UCrop.Options();
+        options.setCircleDimmedLayer(isCircular);
+        options.setCropFrameColor(ContextCompat.getColor(this, R.color.design_default_color_background));
+        UCrop.of(sourceUri, destinationUri)
+                .withMaxResultSize(1000, 500)
+                .withAspectRatio(aspectRatioX, aspectRatioY)
+                .withOptions(options)
+                .start(this, cropRequest);
 
-        try
-        {
-            ExifInterface exif;
-            exif = new ExifInterface(outputFileName.getAbsolutePath());
-            imageExifOrientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION,
-                    ExifInterface.ORIENTATION_NORMAL);
-        }
-        catch (IOException e1)
-        {
-            e1.printStackTrace();
-        }
-
-        int rotationAmount = 0;
-
-        if (imageExifOrientation == ExifInterface.ORIENTATION_ROTATE_270)
-        {
-            // Need to do some rotating here...
-            rotationAmount = 270;
-        }
-        if (imageExifOrientation == ExifInterface.ORIENTATION_ROTATE_90)
-        {
-            // Need to do some rotating here...
-            rotationAmount = 90;
-        }
-        if (imageExifOrientation == ExifInterface.ORIENTATION_ROTATE_180)
-        {
-            // Need to do some rotating here...
-            rotationAmount = 180;
-        }
-
-        int targetW = 240;
-        int targetH = 320;
-
-        BitmapFactory.Options bmOptions = new BitmapFactory.Options();
-        bmOptions.inJustDecodeBounds = true;
-        BitmapFactory.decodeFile(outputFileName.getAbsolutePath(), bmOptions);
-        int photoWidth = bmOptions.outWidth;
-        int photoHeight = bmOptions.outHeight;
-
-        int scaleFactor = Math.min(photoWidth/targetW, photoHeight/targetH);
-
-        bmOptions.inJustDecodeBounds = false;
-        bmOptions.inSampleSize = scaleFactor;
-        bmOptions.inPurgeable = true;
-
-        Bitmap scaledDownBitmap = BitmapFactory.decodeFile(outputFileName.getAbsolutePath(), bmOptions);
-
-        if (rotationAmount != 0)
-        {
-            Matrix mat = new Matrix();
-            mat.postRotate(rotationAmount);
-            scaledDownBitmap = Bitmap.createBitmap(scaledDownBitmap, 0, 0, scaledDownBitmap.getWidth(), scaledDownBitmap.getHeight(), mat, true);
-        }
-
-        ImageView iv2 = (ImageView) findViewById(R.id.photoImageView);
-        iv2.setImageBitmap(scaledDownBitmap);
-
-        FileOutputStream outFileStream = null;
-        try
-        {
-            mLastTakenImageAsJPEGFile = createImageFile(".jpg");
-            outFileStream = new FileOutputStream(mLastTakenImageAsJPEGFile);
-            scaledDownBitmap.compress(Bitmap.CompressFormat.JPEG, 75, outFileStream);
-        }
-        catch (Exception e)
-        {
-            e.printStackTrace();
-        }
     }
 
-    private File createImageFile(String fileExtensionToUse) throws IOException
-    {
-
+    private File getImageFile() throws IOException {
+        String imageFileName = "JPEG_" + System.currentTimeMillis() + "_";
+        //TODO - version controlling using MediaStore
         File storageDir = new File(
                 Environment.getExternalStoragePublicDirectory(
-                        Environment.DIRECTORY_PICTURES
-                ),
-                "whatsapp"
+                        Environment.DIRECTORY_DCIM
+                ), "Camera"
         );
-
-        if(!storageDir.exists())
-        {
-            if (!storageDir.mkdir())
-            {
-                Toast.makeText(this, "was not able to create it", Toast.LENGTH_SHORT).show();
-            }
-        }
-        if (!storageDir.isDirectory())
-        {
-            Toast.makeText(this, "Don't think there is a dir there.", Toast.LENGTH_SHORT).show();
-        }
-
-        // Create an image file name
-        String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
-        String imageFileName = "FOO_" + timeStamp + "_image";
-
-        File image = File.createTempFile(
-                imageFileName,
-                fileExtensionToUse,
-                storageDir
+        System.out.println(storageDir.getAbsolutePath());
+        if (storageDir.exists())
+            System.out.println("File exists");
+        else
+            System.out.println("File not exists");
+        File file = File.createTempFile(
+                imageFileName, ".jpg", storageDir
         );
-
-        return image;
+        currentPhotoPath = "file:" + file.getAbsolutePath();
+        return file;
     }
 
     @Override

@@ -44,4 +44,11 @@ dependencies {
 
     //dexter permissions
     implementation "com.karumi:dexter:5.0.0"
+
+    //Picasso Library for a ImageView using a URL
+    implementation 'com.squareup.picasso:picasso:2.71828'
+    implementation 'jp.wasabeef:picasso-transformations:2.1.0'
+
+    //Ucrop for image crop
+    implementation 'com.github.yalantis:ucrop:2.2.6'
 }
